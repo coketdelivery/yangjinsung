@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>양진성 전용 바둑게임</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      background: #f5f5f5;
+    }
+
+    #intro, #game-container {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+    }
+
+    /* 인트로 화면 */
+    #intro {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      text-align: center;
+    }
+
+    #intro h1 {
+      margin-bottom: 20px;
+      font-size: 1.5rem;
+    }
+
+    #intro button {
+      margin: 10px;
+      padding: 10px 20px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    /* 게임 화면 */
+    #game {
+      display: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      touch-action: none;
+    }
+
+    /* 버튼 영역을 인트로에서는 숨김 */
+    #controls {
+      display: none;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 10px;
+      z-index: 10;
+    }
+
+    #pass, #score, #restart {
+      padding: 6px 12px;
+      font-size: 0.9rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    /* 결과창도 숨김 */
+    #result {
+      display: none;
+      margin-top: 10px;
+      background: rgba(255,255,255,0.9);
+      padding: 6px 10px;
+      border-radius: 5px;
+      font-size: 0.95rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="intro">
+    <h1>사랑합니다. 양진성님 5월19일 생신 축하드립니다.<br>BY 코켓배송</h1>
+    <p>돌을 선택해주세요</p>
+    <button data-color="1">검은돌 선택</button>
+    <button data-color="2">흰돌 선택</button>
+    <audio id="bgm" src="1.mp3" loop preload="auto"></audio>
+  </div>
+
+  <div id="game-container">
+    <div id="game">
+      <canvas id="board"></canvas>
+    </div>
+    <div id="controls">
+      <button id="pass">패스</button>
+      <button id="score">승부 판정</button>
+      <button id="restart">다시 시작</button>
+    </div>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    (function(){
+      const intro = document.getElementById('intro');
+      const gameDiv = document.getElementById('game');
+      const controls = document.getElementById('controls');
+      const canvas = document.getElementById('board');
+      const passBtn = document.getElementById('pass');
+      const scoreBtn = document.getElementById('score');
+      const restartBtn = document.getElementById('restart');
+      const resultDiv = document.getElementById('result');
+      const bgm = document.getElementById('bgm');
+      const ctx = canvas.getContext('2d');
+      const size = 19, margin = 20;
+      let cell, boardState, humanColor, aiColor, currentTurn, lastMove;
+      const aiApiUrl = 'https://example-go-ai.com/api/move';
+
+      function resize(){
+        const w = Math.min(window.innerWidth, 600);
+        canvas.width = canvas.height = w;
+        cell = (w - 2 * margin) / (size - 1);
+        if (boardState) draw();
+      }
+      window.addEventListener('resize', resize);
+
+      function initGame(){
+        boardState = Array.from({ length: size }, () => Array(size).fill(0));
+        currentTurn = 1;
+        lastMove = null;
+        draw();
+        if (aiColor === currentTurn) aiMove();
+      }
+
+      function draw(){
+        if (!boardState) return;
+        const W = canvas.width;
+        ctx.clearRect(0, 0, W, W);
+        ctx.fillStyle = '#deb887'; ctx.fillRect(0, 0, W, W);
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+        for (let i = 0; i < size; i++){
+          const x = margin + i * cell;
+          ctx.beginPath(); ctx.moveTo(x, margin); ctx.lineTo(x, margin + (size - 1) * cell); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(margin, x); ctx.lineTo(margin + (size - 1) * cell, x); ctx.stroke();
+        }
+        [3,9,15].forEach(n=>{
+          ctx.beginPath(); ctx.arc(margin + n * cell, margin + n * cell, 3, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+        boardState.forEach((row, r) => row.forEach((v, c) => {
+          if (v){
+            const cx = margin + c * cell, cy = margin + r * cell;
+            ctx.beginPath(); ctx.arc(cx, cy, cell * 0.4, 0, 2 * Math.PI);
+            ctx.fillStyle = v===1 ? '#000' : '#fff'; ctx.fill(); ctx.stroke();
+          }
+        }));
+      }
+
+      function getPos(e){
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX||e.touches[0].clientX) - rect.left;
+        const y = (e.clientY||e.touches[0].clientY) - rect.top;
+        const c = Math.round((x - margin) / cell);
+        const r = Math.round((y - margin) / cell);
+        return (r<0||r>=size||c<0||c>=size)?null:{r,c};
+      }
+
+      function removeDead(color){
+        const visited = Array.from({ length: size }, () => Array(size).fill(false));
+        for (let r = 0; r < size; r++) for (let c = 0; c < size; c++){
+          if (boardState[r][c] === color && !visited[r][c]){
+            const group = [], stack = [[r,c]]; let hasLib = false;
+            visited[r][c] = true;
+            while(stack.length){
+              const [x,y] = stack.pop(); group.push([x,y]);
+              [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+                const nx=x+dx, ny=y+dy;
+                if(nx<0||nx>=size||ny<0||ny>=size) return;
+                if(boardState[nx][ny]===0) hasLib = true;
+                else if(boardState[nx][ny]===color && !visited[nx][ny]){ visited[nx][ny]=true; stack.push([nx,ny]); }
+              });
+            }
+            if(!hasLib) group.forEach(([x,y]) => boardState[x][y] = 0);
+          }
+        }
+      }
+
+      canvas.addEventListener('pointerdown', e=>{
+        if (currentTurn !== humanColor) return;
+        const p = getPos(e);
+        if (!p || boardState[p.r][p.c]) return;
+        playMove(p.r, p.c, humanColor);
+      });
+
+      async function aiMove(){
+        try{
+          const res = await fetch(aiApiUrl, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ board: boardState, color: aiColor }) });
+          const { r, c } = await res.json();
+          playMove(r, c, aiColor);
+        } catch(e){
+          console.error('AI 호출 실패, 로컬 랜덤 작동', e);
+          const empties = [];
+          boardState.forEach((row,r) => row.forEach((v,c) => { if(!v) empties.push({ r, c }); }));
+          if (!empties.length) return;
+          const m = empties[Math.floor(Math.random() * empties.length)];
+          playMove(m.r, m.c, aiColor);
+        }
+      }
+
+      function playMove(r, c, color){
+        boardState[r][c] = color;
+        removeDead(color===humanColor?aiColor:humanColor);
+        draw();
+        currentTurn = currentTurn===1?2:1;
+        if (currentTurn === aiColor) aiMove();
+      }
+
+      passBtn.addEventListener('click', ()=>{
+        currentTurn = currentTurn===1?2:1;
+        if (currentTurn === aiColor) aiMove();
+      });
+
+      scoreBtn.addEventListener('click', ()=>{
+        const score = calculateScore();
+        resultDiv.textContent = `흑 ${score.black} 집 vs 백 ${score.white} 집 → ${score.winner}`;
+        resultDiv.style.display = 'block';
+        restartBtn.style.display = 'inline-block';
+      });
+
+      function calculateScore(){
+        const visited = Array.from({ length: size }, () => Array(size).fill(false));
+        let terr = { black:0, white:0 };
+        for (let r = 0; r < size; r++) for (let c = 0; c < size; c++){
+          if (boardState[r][c]===0 && !visited[r][c]){
+            const region=[], stack=[[r,c]], adj=new Set(); visited[r][c]=true;
+            while(stack.length){
+              const [x,y] = stack.pop(); region.push([x,y]);
+              [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+                const nx=x+dx, ny=y+dy;
+                if(nx<0||nx>=size||ny<0||ny>=size) return;
+                const v = boardState[nx][ny];
+                if(v===0 && !visited[nx][ny]){ visited[nx][ny]=true; stack.push([nx,ny]); }
+                else if(v) adj.add(v);
+              });
+            }
+            if(adj.size===1){ terr[ adj.has(1)? 'black':'white' ] += region.length; }
+          }
+        }
+        const blackStones = boardState.flat().filter(x=>x===1).length;
+        const whiteStones = boardState.flat().filter(x=>x===2).length;
+        const black = blackStones + terr.black;
+        const white = whiteStones + terr.white;
+        return { black, white, winner: black>white? '흑 승':'백 승' };
+      }
+
+      restartBtn.addEventListener('click', ()=>{ initGame(); resize(); });
+
+      intro.querySelectorAll('button[data-color]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          humanColor = +btn.dataset.color;
+          aiColor = humanColor===1?2:1;
+          bgm.currentTime = 0; bgm.play().catch(()=>{});
+          intro.style.display = 'none';
+          gameDiv.style.display = 'block';
+          controls.style.display = 'flex';
+          initGame(); resize();
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
